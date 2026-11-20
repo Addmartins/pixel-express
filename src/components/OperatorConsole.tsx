@@ -71,6 +71,7 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
   const [selected, setSelected] = useState(0);
   const [mood, setMood] = useState<Mood | "">("");
   const [reason, setReason] = useState<Reason | "">("");
+  const [demoMoodPrompt, setDemoMoodPrompt] = useState(false);
   const [busy, setBusy] = useState("Carregando console…");
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
@@ -88,6 +89,7 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
     setSelected(0);
     setMood("");
     setReason("");
+    setDemoMoodPrompt(false);
     setFeedback("");
     setError(message);
     requestAnimationFrame(() => heading.current?.focus());
@@ -214,7 +216,9 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
       setExpiresAt(next.expiresAt);
       loginForm.current?.reset();
       setSelected(0);
-      navigate(next.checkedIn ? "menu" : "check-in");
+      const isDemo = input.mode === "demo";
+      setDemoMoodPrompt(isDemo);
+      navigate(isDemo || !next.checkedIn ? "check-in" : "menu");
     });
   }
 
@@ -235,14 +239,17 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
     });
   }
 
+  const showMoodForm = Boolean(snapshot && (!snapshot.checkedIn || demoMoodPrompt));
+
   function submitCheckIn() {
-    if (!mood || !reason || snapshot?.checkedIn) return;
+    if (!showMoodForm || !mood || !reason) return;
     void action("Registrando check-in…", async () => {
       const result = await api<CheckInResult>("/api/operator/check-in", "POST", { mood, reason });
       if (expiresAt === null || Date.now() >= expiresAt * 1_000) return;
       setSnapshot(result.snapshot);
       setMood("");
       setReason("");
+      setDemoMoodPrompt(false);
       navigate("menu");
       setFeedback(result.awarded ? `Check-in registrado. +${result.awarded} pontos!` : "Seu check-in de hoje já está registrado.");
     });
@@ -252,7 +259,7 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
   const onA = busy || sessionError ? undefined
     : !snapshot ? () => loginForm.current?.requestSubmit()
     : view === "menu" ? () => navigate(modules[selected].key)
-    : view === "check-in" && !snapshot.checkedIn && mood && reason ? submitCheckIn
+    : view === "check-in" && showMoodForm && mood && reason ? submitCheckIn
     : undefined;
   const onB = !busy && snapshot && view !== "menu" ? () => navigate("menu") : undefined;
 
@@ -300,8 +307,9 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
               <button className="back-button" type="button" onClick={() => navigate("menu")}>← Menu</button>
               <h1 ref={heading} tabIndex={-1}>{activeModule?.label}</h1>
               {view === "check-in" && (
-                snapshot.checkedIn ? <p className="success">✓ Check-in de hoje registrado.</p> : (
+                !showMoodForm ? <p className="success">✓ Check-in de hoje registrado.</p> : (
                   <form onSubmit={(event) => { event.preventDefault(); submitCheckIn(); }}>
+                    {snapshot.checkedIn && <p>O check-in de hoje já foi registrado. O bônus é concedido uma vez por dia.</p>}
                     <fieldset>
                       <legend>Como você está hoje?</legend>
                       <div className="mood-options">
