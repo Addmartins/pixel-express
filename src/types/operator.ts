@@ -17,3 +17,5 @@ export type Snapshot = {
 }
 
 export type CheckInResult = { snapshot: Snapshot; awarded: number }
+
+export type SessionSnapshot = Snapshot & { expiresAt: number }

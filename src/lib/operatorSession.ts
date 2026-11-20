@@ -15,7 +15,7 @@ function sign(payload: string) {
   return createHmac('sha256', secret).update(payload).digest()
 }
 
-export function readOperatorSession(request: NextRequest) {
+export function readOperatorSessionDetails(request: NextRequest) {
   const token = request.cookies.get(cookieName)?.value
   if (!token || token.length > 256) return null
   const [id, expires, mode, signature, extra] = token.split('.')
@@ -25,7 +25,13 @@ export function readOperatorSession(request: NextRequest) {
 
   const expected = sign(`${id}.${expires}.${mode}`)
   const given = Buffer.from(signature, 'base64url')
-  return given.length === expected.length && timingSafeEqual(given, expected) ? id : null
+  return given.length === expected.length && timingSafeEqual(given, expected)
+    ? { id, expiresAt: Number(expires) }
+    : null
+}
+
+export function readOperatorSession(request: NextRequest) {
+  return readOperatorSessionDetails(request)?.id ?? null
 }
 
 function sessionCookie(response: NextResponse, value: string, maxAge: number) {
@@ -38,14 +44,17 @@ function sessionCookie(response: NextResponse, value: string, maxAge: number) {
   })
 }
 
+export function operatorSessionExpiry(authExpiresAt?: number) {
+  return Math.min(Math.floor(Date.now() / 1000) + sessionSeconds, authExpiresAt ?? Infinity)
+}
+
 export function writeOperatorSession(
   response: NextResponse,
   id: string,
   mode: 'demo' | 'password',
-  authExpiresAt?: number,
+  expires: number,
 ) {
   const now = Math.floor(Date.now() / 1000)
-  const expires = Math.min(now + sessionSeconds, authExpiresAt ?? Infinity)
   const payload = `${id}.${expires}.${mode}`
   sessionCookie(response, `${payload}.${sign(payload).toString('base64url')}`, expires - now)
 }

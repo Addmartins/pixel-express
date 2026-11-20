@@ -1,17 +1,26 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createAuthSupabase } from '@/lib/supabase'
 import { operatorError, operatorJson, readOperatorBody } from '@/lib/operatorHttp'
-import { clearOperatorSession, demoEnabled, isSameOrigin, readOperatorSession, writeOperatorSession } from '@/lib/operatorSession'
+import { clearOperatorSession, demoEnabled, isSameOrigin, operatorSessionExpiry, readOperatorSessionDetails, writeOperatorSession } from '@/lib/operatorSession'
 import { findDemoOperator, findOperatorByAuthId, getOperatorSnapshot } from '@/services/operatorService'
+import type { SessionSnapshot, Snapshot } from '@/types/operator'
 
 export const dynamic = 'force-dynamic'
 
+function signIn(snapshot: Snapshot, mode: 'demo' | 'password', authExpiresAt?: number) {
+  const expiresAt = operatorSessionExpiry(authExpiresAt)
+  const body: SessionSnapshot = { ...snapshot, expiresAt }
+  const response = operatorJson(body)
+  writeOperatorSession(response, snapshot.operator.id, mode, expiresAt)
+  return response
+}
+
 export async function GET(request: NextRequest) {
   try {
-    const id = readOperatorSession(request)
-    if (!id) return operatorError('Entre para continuar.', 401)
-    const snapshot = await getOperatorSnapshot(id)
-    return snapshot ? operatorJson(snapshot) : operatorError('Entre para continuar.', 401)
+    const session = readOperatorSessionDetails(request)
+    if (!session) return operatorError('Entre para continuar.', 401)
+    const snapshot = await getOperatorSnapshot(session.id)
+    return snapshot ? operatorJson({ ...snapshot, expiresAt: session.expiresAt }) : operatorError('Entre para continuar.', 401)
   } catch {
     return operatorError('Não foi possível carregar a sessão.', 503)
   }
@@ -31,9 +40,7 @@ export async function POST(request: NextRequest) {
       if (!operator) return operatorError('Operador de demonstração indisponível.', 404)
       const snapshot = await getOperatorSnapshot(operator.id)
       if (!snapshot) return operatorError('Operador de demonstração indisponível.', 404)
-      const response = operatorJson(snapshot)
-      writeOperatorSession(response, operator.id, 'demo')
-      return response
+      return signIn(snapshot, 'demo')
     }
 
     if (input.mode !== 'password' || !('email' in input) || !('password' in input) ||
@@ -59,9 +66,7 @@ export async function POST(request: NextRequest) {
     if (!operator) return operatorError('Seu acesso de operador não está configurado.', 403)
     const snapshot = await getOperatorSnapshot(operator.id)
     if (!snapshot) return operatorError('Seu acesso de operador não está configurado.', 403)
-    const response = operatorJson(snapshot)
-    writeOperatorSession(response, operator.id, 'password', data.session.expires_at)
-    return response
+    return signIn(snapshot, 'password', data.session.expires_at)
   } catch {
     return operatorError('Não foi possível entrar. Confira a configuração ou tente novamente.', 503)
   }

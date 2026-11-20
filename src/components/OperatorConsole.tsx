@@ -1,8 +1,8 @@
 "use client";
 
 import { Activity, Bell, CalendarDays, ChartNoAxesColumn, ClipboardList, Coins, History, LogOut, Settings, ShieldCheck, UserRound, Users } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
-import type { CheckInResult, Mood, Reason, Snapshot } from "@/types/operator";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import type { CheckInResult, Mood, Reason, SessionSnapshot, Snapshot } from "@/types/operator";
 import { ArcadeFrame } from "./ArcadeFrame";
 
 const moods = [
@@ -54,6 +54,7 @@ async function api<T>(path: string, method = "GET", body?: object): Promise<T> {
   const response = await fetch(path, {
     method,
     cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -65,6 +66,7 @@ async function api<T>(path: string, method = "GET", body?: object): Promise<T> {
 
 export default function OperatorConsole({ demoAvailable }: { demoAvailable: boolean }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [view, setView] = useState<View>("menu");
   const [selected, setSelected] = useState(0);
   const [mood, setMood] = useState<Mood | "">("");
@@ -78,6 +80,40 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
   const tiles = useRef<(HTMLButtonElement | null)[]>([]);
   const inFlight = useRef(false);
 
+  const resetSession = useCallback((message = "") => {
+    loginForm.current?.reset();
+    setSnapshot(null);
+    setExpiresAt(null);
+    setView("menu");
+    setSelected(0);
+    setMood("");
+    setReason("");
+    setFeedback("");
+    setError(message);
+    requestAnimationFrame(() => heading.current?.focus());
+  }, []);
+
+  const expireSession = useCallback(() => {
+    setBusy("");
+    resetSession("Sua sessão terminou. Entre novamente para continuar.");
+  }, [resetSession]);
+
+  useEffect(() => {
+    if (expiresAt === null) return;
+    const remaining = expiresAt * 1_000 - Date.now();
+    const checkExpiry = () => {
+      if (Date.now() >= expiresAt * 1_000) expireSession();
+    };
+    const timer = window.setTimeout(expireSession, Math.max(0, remaining));
+    window.addEventListener("focus", checkExpiry);
+    document.addEventListener("visibilitychange", checkExpiry);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", checkExpiry);
+      document.removeEventListener("visibilitychange", checkExpiry);
+    };
+  }, [expiresAt, expireSession]);
+
   async function restore() {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -85,7 +121,9 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
     setError("");
     setSessionError(false);
     try {
-      setSnapshot(await api<Snapshot>("/api/operator"));
+      const session = await api<SessionSnapshot>("/api/operator");
+      setSnapshot(session);
+      setExpiresAt(session.expiresAt);
     } catch (failure) {
       if (failure instanceof ResponseError && failure.status === 401) {
         setSnapshot(null);
@@ -111,14 +149,16 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
       if (inFlight.current || recifeDate() === snapshotDate) return;
       inFlight.current = true;
       try {
-        setSnapshot(await api<Snapshot>("/api/operator"));
+        const latest = await api<SessionSnapshot>("/api/operator");
+        if (expiresAt === null || Date.now() >= expiresAt * 1_000) return;
+        setSnapshot(latest);
+        setExpiresAt(latest.expiresAt);
         setMood("");
         setReason("");
         setFeedback("");
       } catch (failure) {
         if (failure instanceof ResponseError && failure.status === 401) {
-          setSnapshot(null);
-          setView("menu");
+          expireSession();
         }
       } finally {
         inFlight.current = false;
@@ -131,7 +171,7 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
       window.clearInterval(timer);
       window.removeEventListener("focus", refreshAtDayChange);
     };
-  }, [snapshotDate]);
+  }, [snapshotDate, expiresAt, expireSession]);
 
   function navigate(next: View) {
     setView(next);
@@ -155,11 +195,12 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
     try {
       await operation();
     } catch (failure) {
-      if (snapshot && failure instanceof ResponseError && failure.status === 401) {
-        setSnapshot(null);
-        navigate("menu");
+      if (snapshot && ((expiresAt !== null && Date.now() >= expiresAt * 1_000) ||
+          (failure instanceof ResponseError && failure.status === 401))) {
+        expireSession();
+      } else {
+        setError(failure instanceof Error ? failure.message : "Não foi possível concluir a ação.");
       }
-      setError(failure instanceof Error ? failure.message : "Não foi possível concluir a ação.");
     } finally {
       inFlight.current = false;
       setBusy("");
@@ -168,8 +209,9 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
 
   function login(input: Login) {
     void action("Conectando operador…", async () => {
-      const next = await api<Snapshot>("/api/operator", "POST", input);
+      const next = await api<SessionSnapshot>("/api/operator", "POST", input);
       setSnapshot(next);
+      setExpiresAt(next.expiresAt);
       loginForm.current?.reset();
       setSelected(0);
       navigate(next.checkedIn ? "menu" : "check-in");
@@ -189,10 +231,7 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
   function signOut() {
     void action("Encerrando sessão…", async () => {
       await api<void>("/api/operator", "DELETE");
-      setSnapshot(null);
-      setMood("");
-      setReason("");
-      navigate("menu");
+      resetSession();
     });
   }
 
@@ -200,6 +239,7 @@ export default function OperatorConsole({ demoAvailable }: { demoAvailable: bool
     if (!mood || !reason || snapshot?.checkedIn) return;
     void action("Registrando check-in…", async () => {
       const result = await api<CheckInResult>("/api/operator/check-in", "POST", { mood, reason });
+      if (expiresAt === null || Date.now() >= expiresAt * 1_000) return;
       setSnapshot(result.snapshot);
       setMood("");
       setReason("");
